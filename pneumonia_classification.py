@@ -51,8 +51,14 @@ with tf.device('/cpu:0'):
             plt.axis("off")
     plt.show()
 
+    data_augmentation = tf.keras.Sequential([
+        tf.keras.layers.RandomFlip("horizontal"),
+        tf.keras.layers.RandomRotation(0.1),
+        tf.keras.layers.RandomZoom(0.1),
+    ])
     # create model
     model = tf.keras.models.Sequential([
+        data_augmentation,
         Rescaling(1.0 / 255),
         Conv2D(16, (3, 3), activation='relu', input_shape=(img_height, img_width, img_channels)),
         MaxPooling2D(2, 2),
@@ -60,7 +66,7 @@ with tf.device('/cpu:0'):
         MaxPooling2D(2, 2),
         Conv2D(32, (3, 3), activation='relu'),
         MaxPooling2D(2, 2),
-        Flatten(),  # flatten multidimensional outputs into single dimension for input to dense fully connected layers
+        tf.keras.layers.GlobalAveragePooling2D(),  # flatten multidimensional outputs into single dimension for input to dense fully connected layers
         Dense(512, activation='relu'),
         Dropout(0.2),
         Dense(num_classes, activation='softmax')
@@ -70,15 +76,24 @@ with tf.device('/cpu:0'):
                   optimizer=Adam(),
                   metrics=['accuracy'])
 
-    # earlystop_callback = tf.keras.callbacks.EarlyStopping(monitor='val_loss',patience=5)
-    save_callback = tf.keras.callbacks.ModelCheckpoint("pneumonia.keras", save_freq='epoch', save_best_only=True)
+    earlystop_callback = tf.keras.callbacks.EarlyStopping(
+        monitor='val_loss',
+        patience=3,
+        restore_best_weights=True
+    )
+
+    save_callback = tf.keras.callbacks.ModelCheckpoint(
+        "pneumonia.keras",
+        save_freq='epoch',
+        save_best_only=True
+    )
 
     if fit:
         history = model.fit(
             train_ds,
             batch_size=batch_size,
             validation_data=val_ds,
-            callbacks=[save_callback],
+            callbacks=[save_callback, earlystop_callback],
             epochs=epochs)
     else:
         model = tf.keras.models.load_model("pneumonia.keras")
