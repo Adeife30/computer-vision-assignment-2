@@ -1,12 +1,12 @@
 from __future__ import print_function
 
-import keras
 import tensorflow as tf
 from keras.layers import Dense, Dropout, Flatten, Conv2D, MaxPooling2D, Rescaling
 from keras.optimizers import Adam
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.utils.class_weight import compute_class_weight
+from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
 
 
 batch_size = 12
@@ -40,14 +40,14 @@ with tf.device('/cpu:0'):
         image_size=(img_height, img_width),
         batch_size=batch_size,
         labels='inferred',
-        shuffle=True
+        shuffle=False
     )
 
     class_names = train_ds.class_names
-    print('Class Names: ', class_names)
+    print('Class Names:', class_names)
     num_classes = len(class_names)
 
-    # compute class weights to help with dataset imbalance
+    # compute class weights
     train_labels = np.concatenate([y.numpy() for x, y in train_ds], axis=0)
 
     class_weights_array = compute_class_weight(
@@ -59,9 +59,9 @@ with tf.device('/cpu:0'):
     class_weights = {i: class_weights_array[i] for i in range(len(class_weights_array))}
     print("Class weights:", class_weights)
 
-    # show some sample training images
+    # show sample training images
     plt.figure(figsize=(10, 10))
-    for images, labels in train_ds.take(2):
+    for images, labels in train_ds.take(1):
         for i in range(6):
             ax = plt.subplot(2, 3, i + 1)
             plt.imshow(images[i].numpy().astype("uint8"))
@@ -122,18 +122,39 @@ with tf.device('/cpu:0'):
     else:
         model = tf.keras.models.load_model("pneumonia.keras")
 
+    # evaluate on test set
     score = model.evaluate(test_ds, batch_size=batch_size)
     print('Test accuracy:', score[1])
 
+    # plot training history
     if fit:
+        plt.figure()
         plt.plot(history.history['accuracy'])
         plt.plot(history.history['val_accuracy'])
-        plt.title('model accuracy')
-        plt.ylabel('accuracy')
-        plt.xlabel('epoch')
-        plt.legend(['train', 'val'], loc='upper left')
+        plt.title('Model Accuracy')
+        plt.ylabel('Accuracy')
+        plt.xlabel('Epoch')
+        plt.legend(['Train', 'Validation'], loc='upper left')
         plt.show()
 
+    # predictions for metrics
+    y_true = np.concatenate([y.numpy() for x, y in test_ds], axis=0)
+    y_pred_probs = model.predict(test_ds, verbose=1)
+    y_pred = np.argmax(y_pred_probs, axis=1)
+
+    print("\nClassification Report:")
+    print(classification_report(y_true, y_pred, target_names=class_names))
+
+    cm = confusion_matrix(y_true, y_pred)
+    print("Confusion Matrix:")
+    print(cm)
+
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names)
+    disp.plot(cmap='Blues')
+    plt.title("Confusion Matrix")
+    plt.show()
+
+    # show sample predictions
     test_batch = test_ds.take(1)
     plt.figure(figsize=(10, 10))
     for images, labels in test_batch:
@@ -142,8 +163,8 @@ with tf.device('/cpu:0'):
             plt.imshow(images[i].numpy().astype("uint8"))
             prediction = model.predict(tf.expand_dims(images[i].numpy(), 0), verbose=0)
             plt.title(
-                'Actual:' + class_names[labels[i].numpy()] +
-                '\nPredicted:{} {:.2f}%'.format(
+                'Actual: ' + class_names[labels[i].numpy()] +
+                '\nPredicted: {} {:.2f}%'.format(
                     class_names[np.argmax(prediction)],
                     100 * np.max(prediction)
                 )
