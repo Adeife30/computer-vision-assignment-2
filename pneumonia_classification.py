@@ -8,27 +8,31 @@ import numpy as np
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
 
+plt.ion()
 
 batch_size = 12
 epochs = 8
 img_width = 128
 img_height = 128
 img_channels = 3
-fit = True  # make fit false if you do not want to train the network again
+fit = True
 
 train_dir = r'C:\Users\adeif\OneDrive\Year 4\Sem 2\Computer Vision\Assignment 2\chest_xray\train'
 test_dir = r'C:\Users\adeif\OneDrive\Year 4\Sem 2\Computer Vision\Assignment 2\chest_xray\test'
 
 
-def get_gradcam_heatmap(model, image, last_conv_layer_name):
-    grad_model = tf.keras.models.Model(
-        inputs=model.inputs,
-        outputs=[model.get_layer(last_conv_layer_name).output, model.output]
-    )
-
+def get_gradcam_heatmap(feature_extractor, classifier, image_array, pred_index=None):
+    """
+    Generates a Grad-CAM heatmap for one image.
+    """
     with tf.GradientTape() as tape:
-        conv_outputs, predictions = grad_model(image)
-        pred_index = tf.argmax(predictions[0])
+        conv_outputs = feature_extractor(image_array)
+        tape.watch(conv_outputs)
+
+        predictions = classifier(conv_outputs)
+        if pred_index is None:
+            pred_index = tf.argmax(predictions[0])
+
         class_channel = predictions[:, pred_index]
 
     grads = tape.gradient(class_channel, conv_outputs)
@@ -40,14 +44,14 @@ def get_gradcam_heatmap(model, image, last_conv_layer_name):
     heatmap = tf.maximum(heatmap, 0)
     max_val = tf.reduce_max(heatmap)
     if max_val > 0:
-        heatmap /= max_val
+        heatmap = heatmap / max_val
 
     return heatmap.numpy()
 
 
 with tf.device('/cpu:0'):
 
-    # create training, validation and test datasets
+    # Datasets
     train_ds, val_ds = tf.keras.preprocessing.image_dataset_from_directory(
         train_dir,
         seed=123,
@@ -71,9 +75,9 @@ with tf.device('/cpu:0'):
     class_names = train_ds.class_names
     num_classes = len(class_names)
 
-    print('Class Names:', class_names)
+    print("Class Names:", class_names)
 
-    # compute class weights
+    # Class weights
     train_labels = np.concatenate([y.numpy() for _, y in train_ds], axis=0)
 
     class_weights_array = compute_class_weight(
@@ -85,7 +89,7 @@ with tf.device('/cpu:0'):
     class_weights = {i: class_weights_array[i] for i in range(len(class_weights_array))}
     print("Class weights:", class_weights)
 
-    # show sample training images
+    # Sample training images
     plt.figure(figsize=(10, 10))
     for images, labels in train_ds.take(1):
         for i in range(6):
@@ -93,16 +97,18 @@ with tf.device('/cpu:0'):
             plt.imshow(images[i].numpy().astype("uint8"))
             plt.title(class_names[labels[i].numpy()])
             plt.axis("off")
+    plt.tight_layout()
     plt.show()
+    plt.pause(0.1)
 
-    # data augmentation
+    # Data augmentation
     data_augmentation = tf.keras.Sequential([
         tf.keras.layers.RandomFlip("horizontal"),
         tf.keras.layers.RandomRotation(0.1),
         tf.keras.layers.RandomZoom(0.1),
-    ])
+    ], name="data_augmentation")
 
-    # create model
+    # Main model
     model = tf.keras.models.Sequential([
         data_augmentation,
         Rescaling(1.0 / 255),
@@ -146,11 +152,11 @@ with tf.device('/cpu:0'):
     else:
         model = tf.keras.models.load_model("pneumonia.keras")
 
-    # evaluate on test set
+    # Evaluation
     score = model.evaluate(test_ds, batch_size=batch_size)
-    print('Test accuracy:', score[1])
+    print("Test accuracy:", score[1])
 
-    # plot training history
+    # Accuracy graph
     if fit:
         plt.figure()
         plt.plot(history.history['accuracy'])
@@ -159,9 +165,12 @@ with tf.device('/cpu:0'):
         plt.ylabel('Accuracy')
         plt.xlabel('Epoch')
         plt.legend(['Train', 'Validation'], loc='upper left')
+        plt.tight_layout()
+        plt.savefig("accuracy_graph.png")
         plt.show()
+        plt.pause(0.1)
 
-    # predictions for metrics
+    # Metrics
     y_true = np.concatenate([y.numpy() for _, y in test_ds], axis=0)
     y_pred_probs = model.predict(test_ds, verbose=1)
     y_pred = np.argmax(y_pred_probs, axis=1)
@@ -176,73 +185,105 @@ with tf.device('/cpu:0'):
     disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names)
     disp.plot(cmap='Blues')
     plt.title("Confusion Matrix")
+    plt.tight_layout()
+    plt.savefig("confusion_matrix.png")
     plt.show()
+    plt.pause(0.1)
 
-    # show sample predictions
-    test_batch = test_ds.take(1)
+    # Sample predictions
     plt.figure(figsize=(10, 10))
-    for images, labels in test_batch:
+    for images, labels in test_ds.take(1):
         for i in range(6):
             ax = plt.subplot(2, 3, i + 1)
             plt.imshow(images[i].numpy().astype("uint8"))
             prediction = model.predict(tf.expand_dims(images[i].numpy(), 0), verbose=0)
             plt.title(
-                'Actual: ' + class_names[labels[i].numpy()] +
-                '\nPredicted: {} {:.2f}%'.format(
+                "Actual: " + class_names[labels[i].numpy()] +
+                "\nPredicted: {} {:.2f}%".format(
                     class_names[np.argmax(prediction)],
                     100 * np.max(prediction)
                 )
             )
             plt.axis("off")
+    plt.tight_layout()
+    plt.savefig("sample_predictions.png")
     plt.show()
+    plt.pause(0.1)
 
-    # Grad-CAM example
+    # ----------------------------
+    # Grad-CAM
+    # ----------------------------
+    print("\n--- GRAD-CAM START ---")
+
+    # Build feature extractor and classifier separately
+    feature_extractor = tf.keras.Model(
+        inputs=model.inputs,
+        outputs=model.get_layer("last_conv_layer").output
+    )
+
+    classifier_input = tf.keras.Input(shape=feature_extractor.output.shape[1:])
+    x = classifier_input
+    start_collecting = False
+
+    for layer in model.layers:
+        if layer.name == "last_conv_layer":
+            start_collecting = True
+            continue
+        if start_collecting:
+            x = layer(x)
+
+    classifier = tf.keras.Model(classifier_input, x)
+
     for images, labels in test_ds.take(1):
-        image = images[0]
-        label = labels[0].numpy()
-        image_array = tf.expand_dims(image, axis=0)
+        image = images[0].numpy()
+        image_array = tf.expand_dims(images[0], axis=0)
 
-        heatmap = get_gradcam_heatmap(model, image_array, "last_conv_layer")
+        preds = model.predict(image_array, verbose=0)
+        pred_class = np.argmax(preds[0])
+        actual_class = labels[0].numpy()
 
+        print("Grad-CAM Actual:", class_names[actual_class])
+        print("Grad-CAM Predicted:", class_names[pred_class])
+
+        heatmap = get_gradcam_heatmap(feature_extractor, classifier, image_array, pred_class)
+        print("Heatmap generated successfully. Shape:", heatmap.shape)
+
+        # Original
         plt.figure(figsize=(5, 5))
-        plt.imshow(image.numpy().astype("uint8"))
-        plt.title(f"Original Image - Actual: {class_names[label]}")
+        plt.imshow(image.astype("uint8"))
+        plt.title(f"Original Image - Actual: {class_names[actual_class]}")
         plt.axis("off")
+        plt.tight_layout()
+        plt.savefig("gradcam_original.png")
         plt.show()
+        plt.pause(0.1)
 
+        # Heatmap
         plt.figure(figsize=(5, 5))
-        plt.imshow(heatmap, cmap='jet')
+        plt.imshow(heatmap, cmap="jet")
         plt.title("Grad-CAM Heatmap")
         plt.colorbar()
         plt.axis("off")
+        plt.tight_layout()
+        plt.savefig("gradcam_heatmap.png")
         plt.show()
+        plt.pause(0.1)
 
+        # Overlay
         plt.figure(figsize=(5, 5))
-        plt.imshow(image.numpy().astype("uint8"))
-        plt.imshow(heatmap, cmap='jet', alpha=0.4)
+        plt.imshow(image.astype("uint8"))
+        plt.imshow(
+            heatmap,
+            cmap="jet",
+            alpha=0.4,
+            extent=(0, image.shape[1], image.shape[0], 0)
+        )
         plt.title("Grad-CAM Overlay")
         plt.axis("off")
+        plt.tight_layout()
+        plt.savefig("gradcam_overlay.png")
         plt.show()
+        plt.pause(0.1)
 
         break
 
-        from tensorflow.keras.applications import MobileNetV2
-
-        base_model = MobileNetV2(
-            input_shape=(img_height, img_width, img_channels),
-            include_top=False,
-            weights='imagenet'
-        )
-
-        # freeze base model
-        base_model.trainable = False
-
-        model = tf.keras.Sequential([
-            data_augmentation,
-            Rescaling(1.0 / 255),
-            base_model,
-            tf.keras.layers.GlobalAveragePooling2D(),
-            Dense(128, activation='relu'),
-            Dropout(0.3),
-            Dense(num_classes, activation='softmax')
-        ])
